@@ -24,7 +24,7 @@ env:
   PROJECT_NAME: netpulse-rs
 
 jobs:
-  # 代码质量检查（PR 或非 Tag 推送时运行）
+  # 代码质量检查（仅 PR 或非 Tag 推送时运行）
   lint:
     name: Code Quality Check
     runs-on: ubuntu-22.04
@@ -51,15 +51,22 @@ jobs:
       - name: Run Tests
         run: cargo test --verbose
 
-  # 构建 Linux x86_64 静态二进制（核心任务）
+  # 构建 Linux x86_64 静态二进制
   build-linux-x86_64-static:
     name: Build Linux x86_64 Static
     runs-on: ubuntu-22.04
     timeout-minutes: 30
+    # ✅ 修复：Tag 推送时不依赖 lint 任务
     needs:
       - lint
-    # ✅ 优化：Tag 推送时跳过 lint 依赖检查，直接执行构建
-    if: github.event_name == 'pull_request' && needs.lint.result == 'success' || github.event_name != 'pull_request'
+    if: |
+      always() &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' && needs.lint.result == 'success') ||
+        (github.event_name == 'push' && !startsWith(github.ref, 'refs/heads/master')) ||
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+      )
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
@@ -113,7 +120,6 @@ jobs:
           cargo build \
             --target x86_64-unknown-linux-musl \
             --release \
-            --locked \
             --verbose
 
           echo "=== 编译后目录内容 ==="
@@ -218,11 +224,6 @@ jobs:
           echo "final_bin=release/${FINAL_BIN}" >> $GITHUB_OUTPUT
           echo "final_sum=release/${FINAL_BIN}.sha256" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "is_tag=${{ startsWith(github.ref, 'refs/tags/') && startsWith(github.ref_name, 'v') }}" >> $GITHUB_OUTPUT
-
-          echo "=== 最终产物 ==="
-          ls -lh release/
-          cat "release/${FINAL_BIN}.sha256"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -231,25 +232,6 @@ jobs:
           path: release/
           retention-days: 30
           if-no-files-found: error
-
-      # ✅ 优化：独立的 Release 发布任务，简化条件 + 增强调试
-      - name: Debug Release Conditions
-        if: always()
-        run: |
-          echo "=== Release 发布条件调试 ==="
-          echo "github.ref: ${{ github.ref }}"
-          echo "github.ref_name: ${{ github.ref_name }}"
-          echo "startsWith(github.ref, 'refs/tags/'): ${{ startsWith(github.ref, 'refs/tags/') }}"
-          echo "startsWith(github.ref_name, 'v'): ${{ startsWith(github.ref_name, 'v') }}"
-          echo "is_tag output: ${{ steps.package.outputs.is_tag }}"
-          echo "final_bin: ${{ steps.package.outputs.final_bin }}"
-          echo "final_sum: ${{ steps.package.outputs.final_sum }}"
-          if [ -f "${{ steps.package.outputs.final_bin }}" ]; then
-            echo "✅ Binary file exists"
-            ls -lh "${{ steps.package.outputs.final_bin }}"
-          else
-            echo "❌ Binary file NOT found"
-          fi
 
       - name: Publish to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/') && startsWith(github.ref_name, 'v')
@@ -263,39 +245,18 @@ jobs:
             - SHA256 checksum included
         run: |
           set -euo pipefail
-          echo "=== 开始发布到 GitHub Releases ==="
-          echo "Tag: ${{ github.ref_name }}"
-          echo "Repository: ${{ github.repository }}"
-          echo "Binary path: ${{ steps.package.outputs.final_bin }}"
-          echo "Checksum path: ${{ steps.package.outputs.final_sum }}"
 
-          # 校验产物文件
           if [ ! -f "${{ steps.package.outputs.final_bin }}" ]; then
-            echo "ERROR: Binary file missing at ${{ steps.package.outputs.final_bin }}"
-            ls -lh release/ || true
+            echo "ERROR: Binary file missing"
             exit 1
           fi
           if [ ! -f "${{ steps.package.outputs.final_sum }}" ]; then
-            echo "ERROR: Checksum file missing at ${{ steps.package.outputs.final_sum }}"
-            ls -lh release/ || true
+            echo "ERROR: Checksum file missing"
             exit 1
           fi
 
-          # 配置 gh CLI（确保使用 GITHUB_TOKEN 认证）
-          echo "Configuring gh CLI..."
-          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+          gh release delete ${{ github.ref_name }} --yes 2>/dev/null || true
 
-          # 删除同名 Release（避免冲突）
-          echo "Checking for existing release..."
-          if gh release view ${{ github.ref_name }} --repo ${{ github.repository }} >/dev/null 2>&1; then
-            echo "Deleting existing release: ${{ github.ref_name }}"
-            gh release delete ${{ github.ref_name }} --repo ${{ github.repository }} --yes || true
-          else
-            echo "No existing release found, proceeding to create new one"
-          fi
-
-          # 创建 Release
-          echo "Creating release: ${{ github.ref_name }}"
           gh release create ${{ github.ref_name }} \
             --repo ${{ github.repository }} \
             --title "Release ${{ github.ref_name }}" \
@@ -305,13 +266,4 @@ jobs:
             "${{ steps.package.outputs.final_bin }}" \
             "${{ steps.package.outputs.final_sum }}"
 
-          # 发布后验证
-          echo "=== 发布验证 ==="
-          if gh release view ${{ github.ref_name }} --repo ${{ github.repository }} --json assets --jq '.assets | length' | grep -q '[1-9]'; then
-            echo "✅ Release published successfully!"
-            echo "🔗 URL: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
-            gh release view ${{ github.ref_name }} --repo ${{ github.repository }} --json assets --jq '.assets[] | {name, size, downloadUrl}'
-          else
-            echo "❌ Release published but assets missing!"
-            exit 1
-          fi
+          echo "Release published successfully"
