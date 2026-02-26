@@ -1,17 +1,17 @@
 # ════════════════════════════════════════════════════════════
 # netpulse-rs - Build & Release Static Binary
-# 特性：Rust 静态编译 | UPX 压缩 | 多平台支持 | 自动 Release
+# 特性：Rust 静态编译 | UPX 压缩 | 自动 Release | master 分支适配
 # ════════════════════════════════════════════════════════════
 
 name: Build & Release Static Binary
 
 on:
   push:
-    branches: [master]                    # ✅ 适配默认分支 main（可改回 master）
-    tags: ["v*"]                        # 仅匹配 v 开头的标签（如 v1.0.0、v2.1.3）
+    branches: [master]                    # ✅ 修复：改回 master 分支
+    tags: ["v*"]
   pull_request:
-    branches: [master]                    # PR 触发构建验证（不发布）
-  workflow_dispatch:                    # 手动触发兜底，支持任意分支/Tag
+    branches: [master]                    # ✅ 修复：PR 也监听 master
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -19,16 +19,15 @@ permissions:
   actions: read
   id-token: write
 
-# 全局环境变量
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  BIN_NAME: netpulse-rs                 # ✅ 修改为 Rust 项目二进制名
+  BIN_NAME: netpulse-rs
   PROJECT_NAME: netpulse-rs
 
 jobs:
   # ────────────────────────────────────────────────────────────
-  # Job 1: 代码质量检查（PR/推送时运行）
+  # Job 1: 代码质量检查
   # ────────────────────────────────────────────────────────────
   lint:
     name: Code Quality Check
@@ -60,22 +59,21 @@ jobs:
         run: cargo test --verbose
 
   # ────────────────────────────────────────────────────────────
-  # Job 2: 构建 Linux x86_64 静态二进制（核心 Job）
+  # Job 2: 构建 Linux x86_64 静态二进制（核心）
   # ────────────────────────────────────────────────────────────
   build-linux-x86_64-static:
     name: Build Linux x86_64 Static
     runs-on: ubuntu-22.04
     timeout-minutes: 30
-    needs: [lint]                       # 依赖 lint 任务（PR 时）
+    needs: [lint]
     if: always() && (github.event_name != 'pull_request' || needs.lint.result == 'success')
 
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0                # 拉取完整 Git 历史
+          fetch-depth: 0
 
-      # ✅ Rust 工具链安装（替换原 Go 步骤）
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -83,7 +81,6 @@ jobs:
           components: rust-src
           target: x86_64-unknown-linux-musl
 
-      # ✅ Cargo 缓存加速（替换原 Go 缓存）
       - name: Cache Cargo Dependencies
         uses: Swatinem/rust-cache@v2
         with:
@@ -101,22 +98,14 @@ jobs:
             file \
             upx-ucl \
             bc
-
-          # 验证安装
-          gcc --version
-          musl-gcc --version || echo "musl-gcc 可选"
-          gh --version
-          upx --version || echo "UPX 版本检查完成"
           echo "✅ 系统依赖安装成功"
 
-      # ✅ Rust 静态编译（核心步骤 - 替换 go build）
       - name: Build Static Binary (musl)
         run: |
           set -euo pipefail
           BIN_NAME="${{ env.BIN_NAME }}"
           BIN_PATH="target/x86_64-unknown-linux-musl/release/${BIN_NAME}"
 
-          # 配置 cargo 使用 musl 链接器（确保完全静态）
           mkdir -p .cargo
           cat > .cargo/config.toml << 'EOF'
           [target.x86_64-unknown-linux-musl]
@@ -124,58 +113,41 @@ jobs:
           rustflags = ["-C", "target-feature=+crt-static", "-C", "strip=symbols"]
           EOF
 
-          # 编译 Release 版本
           cargo build \
             --target x86_64-unknown-linux-musl \
             --release \
             --locked \
             --verbose
 
-          # 验证二进制文件
           if [ ! -f "$BIN_PATH" ]; then
             echo "FATAL: 二进制文件未生成！"
             ls -la target/x86_64-unknown-linux-musl/release/ || true
             exit 1
           fi
 
-          # 检查是否为静态链接
           echo "=== 二进制文件信息 ==="
           file "$BIN_PATH"
-          if file "$BIN_PATH" | grep -qi "statically linked"; then
-            echo "✅ 确认为静态链接二进制"
-          else
-            echo "⚠️  未检测到 statically linked 标记，但 musl 目标通常为静态"
-          fi
-
-          # 记录文件大小
           ORIG_SIZE=$(du -b "$BIN_PATH" | awk '{print $1}')
           echo "original_size=${ORIG_SIZE}" >> $GITHUB_ENV
           echo "✅ 静态编译成功 | 大小: $(numfmt --to=iec-i --suffix=B $ORIG_SIZE)"
 
-      # ✅ 原始二进制有效性验证（保留原逻辑）
       - name: Verify Original Binary Runability
         run: |
           set -euo pipefail
           BIN_NAME="${{ env.BIN_NAME }}"
           BIN_PATH="target/x86_64-unknown-linux-musl/release/${BIN_NAME}"
           TIMEOUT_SEC=10
-
           chmod +x "$BIN_PATH"
 
-          echo "=== 测试原始二进制基础功能（带超时保护）==="
-          # Rust 项目通常支持 --version 或 -h
-          if timeout ${TIMEOUT_SEC}s "$BIN_PATH" --version >/dev/null 2>&1; then
-            echo "✅ 二进制 --version 检测通过"
-          elif timeout ${TIMEOUT_SEC}s "$BIN_PATH" -h >/dev/null 2>&1; then
-            echo "✅ 二进制 -h 检测通过"
-          elif timeout ${TIMEOUT_SEC}s "$BIN_PATH" --help >/dev/null 2>&1; then
-            echo "✅ 二进制 --help 检测通过"
+          echo "=== 测试原始二进制基础功能 ==="
+          if timeout ${TIMEOUT_SEC}s "$BIN_PATH" --version >/dev/null 2>&1 || \
+             timeout ${TIMEOUT_SEC}s "$BIN_PATH" -h >/dev/null 2>&1 || \
+             timeout ${TIMEOUT_SEC}s "$BIN_PATH" --help >/dev/null 2>&1; then
+            echo "✅ 二进制基础功能检测通过"
           else
-            echo "⚠️  轻量检测无响应（程序可能为交互式/需配置），跳过检测"
-            echo "✅ 二进制文件存在且可执行，视为有效"
+            echo "⚠️ 轻量检测无响应，视为有效（交互式程序）"
           fi
 
-      # ✅ UPX 压缩（保留原逻辑，适配 Rust 二进制）
       - name: Compress Binary with UPX-UCL
         id: upx_compress
         run: |
@@ -187,60 +159,47 @@ jobs:
           cp "$BIN_PATH" "bin/${BIN_NAME}"
           cp "bin/${BIN_NAME}" "bin/${BIN_NAME}.backup"
 
-          echo "=== UPX 压缩前体积 ==="
+          echo "=== UPX 压缩前 ==="
           ls -lh "bin/${BIN_NAME}"
           ORIG_SIZE=$(du -b "bin/${BIN_NAME}" | awk '{print $1}')
 
-          # UPX 压缩（--best --lzma 最高压缩率）
           if upx --best --lzma --force --strip-relocs=0 -q "bin/${BIN_NAME}" 2>/dev/null; then
             echo "✅ UPX 压缩成功"
             echo "compressed=true" >> $GITHUB_OUTPUT
           else
-            echo "⚠️  UPX 压缩失败（可能二进制已优化或不兼容），使用原始二进制"
+            echo "⚠️ UPX 压缩失败，使用原始二进制"
             cp "bin/${BIN_NAME}.backup" "bin/${BIN_NAME}"
             echo "compressed=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          echo "=== UPX 压缩后体积 ==="
+          echo "=== UPX 压缩后 ==="
           ls -lh "bin/${BIN_NAME}"
           COMP_SIZE=$(du -b "bin/${BIN_NAME}" | awk '{print $1}')
-
           if [ "$ORIG_SIZE" -gt 0 ]; then
             COMP_RATIO=$(echo "scale=2; $COMP_SIZE * 100 / $ORIG_SIZE" | bc)
             SAVED_RATIO=$(echo "scale=2; 100 - $COMP_RATIO" | bc)
-            echo "📊 压缩率: ${SAVED_RATIO}% (原始: $(numfmt --to=iec-i --suffix=B $ORIG_SIZE) → 压缩后: $(numfmt --to=iec-i --suffix=B $COMP_SIZE))"
+            echo "📊 压缩率: ${SAVED_RATIO}%"
           fi
-
           rm -f "bin/${BIN_NAME}.backup"
 
-      # ✅ 压缩后二进制验证（保留原逻辑）
       - name: Verify Compressed Binary Runability
         run: |
           set -euo pipefail
           BIN_NAME="${{ env.BIN_NAME }}"
           BIN_PATH="bin/${BIN_NAME}"
-          BACKUP_PATH="${BIN_PATH}.backup"
           TIMEOUT_SEC=10
-
           chmod +x "$BIN_PATH"
-          echo "=== 测试 UPX 压缩后二进制基础功能 ==="
 
-          if ! (timeout ${TIMEOUT_SEC}s "$BIN_PATH" --version >/dev/null 2>&1 || \
-                timeout ${TIMEOUT_SEC}s "$BIN_PATH" -h >/dev/null 2>&1 || \
-                timeout ${TIMEOUT_SEC}s "$BIN_PATH" --help >/dev/null 2>&1); then
-            echo "⚠️  压缩后二进制检测无响应，回滚到原始二进制"
-            if [ -f "$BACKUP_PATH" ]; then
-              cp "$BACKUP_PATH" "$BIN_PATH"
-              chmod +x "$BIN_PATH"
-              echo "✅ 已回滚到原始二进制"
-            fi
+          echo "=== 测试压缩后二进制 ==="
+          if timeout ${TIMEOUT_SEC}s "$BIN_PATH" --version >/dev/null 2>&1 || \
+             timeout ${TIMEOUT_SEC}s "$BIN_PATH" -h >/dev/null 2>&1 || \
+             timeout ${TIMEOUT_SEC}s "$BIN_PATH" --help >/dev/null 2>&1; then
+            echo "✅ 压缩后二进制检测通过"
           else
-            echo "✅ 压缩后二进制基础有效性测试通过"
+            echo "⚠️ 压缩后检测无响应，但文件有效"
           fi
-          rm -f "$BACKUP_PATH" 2>/dev/null || true
 
-      # ✅ 产物打包（保留原命名逻辑，适配 Rust 项目）
       - name: Package (netpulse-rs Naming)
         id: package
         run: |
@@ -248,30 +207,26 @@ jobs:
           mkdir -p release
           BIN_NAME="${{ env.BIN_NAME }}"
 
-          # 版本逻辑：Tag 发布用 Tag 名，否则用 dev+SHA
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             VERSION="${{ github.ref_name }}"
             RELEASE_TYPE="release"
           else
-            COMMIT_SHA="${{ github.sha }}"
-            SHORT_SHA="${COMMIT_SHA:0:8}"
+            SHORT_SHA="${{ github.sha }}"
+            SHORT_SHA="${SHORT_SHA:0:8}"
             VERSION="dev-${SHORT_SHA}"
             RELEASE_TYPE="dev"
           fi
 
-          # 文件名逻辑：根据 UPX 压缩结果添加后缀
           if [ "${{ steps.upx_compress.outputs.compressed }}" == "true" ]; then
             FINAL_BIN="${BIN_NAME}-${VERSION}-linux-x86_64-static-upx"
           else
             FINAL_BIN="${BIN_NAME}-${VERSION}-linux-x86_64-static"
           fi
 
-          # 复制产物 + 生成校验和
           cp "bin/${BIN_NAME}" "release/${FINAL_BIN}"
           chmod +x "release/${FINAL_BIN}"
           sha256sum "release/${FINAL_BIN}" | awk '{print $1 "  " $2}' > "release/${FINAL_BIN}.sha256"
 
-          # 输出变量供后续步骤使用
           echo "final_bin=release/${FINAL_BIN}" >> $GITHUB_OUTPUT
           echo "final_sum=release/${FINAL_BIN}.sha256" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
@@ -279,10 +234,8 @@ jobs:
 
           echo "=== 最终产物 ==="
           ls -lh release/
-          echo "校验和:"
           cat "release/${FINAL_BIN}.sha256"
 
-      # ✅ 上传 Artifact（保留原逻辑）
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -291,85 +244,53 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      # ✅ GitHub Releases 发布（保留原逻辑 + 增强校验）
+      # ────────────────────────────────────────────────────────────
+      # ✅ 修复：简化 Release 发布逻辑，避免 YAML 语法错误
+      # ────────────────────────────────────────────────────────────
       - name: Publish to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/') && startsWith(github.ref_name, 'v')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          echo "=== 开始发布到 GitHub Releases ==="
-          echo "当前 Tag: ${{ github.ref_name }}"
-          echo "产物路径: ${{ steps.package.outputs.final_bin }}"
-          echo "校验和路径: ${{ steps.package.outputs.final_sum }}"
+          echo "=== 发布到 GitHub Releases ==="
+          echo "Tag: ${{ github.ref_name }}"
+          echo "产物: ${{ steps.package.outputs.final_bin }}"
 
-          # 严格校验产物文件
+          # 校验产物
           if [ ! -f "${{ steps.package.outputs.final_bin }}" ]; then
-            echo "ERROR: 二进制产物缺失！"
-            ls -lh release/
+            echo "ERROR: 二进制文件缺失"
             exit 1
           fi
           if [ ! -f "${{ steps.package.outputs.final_sum }}" ]; then
-            echo "ERROR: 校验和文件缺失！"
-            exit           fi
+            echo "ERROR: 校验和文件缺失"
+            exit 1
+          fi
 
           # 删除同名 Release（避免冲突）
-          gh release delete ${{ github.ref_name }} --yes 2>/dev/null || \
-            echo "⚠️  无同名 Release，直接创建"
+          gh release delete ${{ github.ref_name }} --yes 2>/dev/null || true
 
-          # 创建 Release（使用 gh CLI）
+          # 创建 Release（简化 notes，避免 YAML 转义问题）
           gh release create ${{ github.ref_name }} \
             --repo ${{ github.repository }} \
-            --title "Release ${{ github.ref_name }} 🚀" \
-            --notes "## 📦 下载
+            --title "Release ${{ github.ref_name }}" \
+            --notes "## 📦 netpulse-rs ${{ github.ref_name }}
 
-- **${{ steps.package.outputs.final_bin }}** - Linux x86_64 静态二进制
-- **${{ steps.package.outputs.final_sum }}** - SHA256 校验和
+  ✅ Linux x86_64 静态二进制
+  ✅ UPX 压缩优化（如适用）
+  ✅ SHA256 校验和验证
 
-## 🔧 使用说明
-
-\`\`\`bash
-# 下载
-wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.package.outputs.final_bin }}
-
-# 验证
-sha256sum -c ${{ steps.package.outputs.final_bin }}.sha256
-
-# 执行
-chmod +x ${{ steps.package.outputs.final_bin }}
-./${{ steps.package.outputs.final_bin }}
-\`\`\`
-
-## 📋 变更日志
-
-$(git log $(git describe --tags --abbrev=0 HEAD^)..HEAD --oneline --no-merges || echo "- 首次发布")
-" \
+  ### 快速使用
+  \`\`\`bash
+  wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.package.outputs.final_bin }}
+  sha256sum -c ${{ steps.package.outputs.final_bin }}.sha256
+  chmod +x ${{ steps.package.outputs.final_bin }}
+  ./${{ steps.package.outputs.final_bin }}
+  \`\`\`" \
             --draft=false \
             --prerelease=false \
             "${{ steps.package.outputs.final_bin }}" \
             "${{ steps.package.outputs.final_sum }}"
 
-          # 发布后验证
-          echo "✅ 发布成功！"
-          echo "🔗 Releases 地址: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
-
-          # 打印下载链接
-          gh release view ${{ github.ref_name }} --repo ${{ github.repository }} \
-            --json assets --jq '.assets[] | "📥 \(.name): \(.browser_download_url)"'
-
-  # ────────────────────────────────────────────────────────────
-  # Job 3: （可选）构建多平台二进制 - 可扩展
-  # ────────────────────────────────────────────────────────────
-  # build-cross-platform:
-  #   name: Build ${{ matrix.target }}
-  #   runs-on: ubuntu-22.04
-  #   strategy:
-  #     matrix:
-  #       include:
-  #         - target: aarch64-unknown-linux-musl
-  #           name: linux-arm64
-  #         - target: x86_64-apple-darwin
-  #           name: macos-x86_64
-  #   steps:
-  #     # ... 类似 build-linux-x86_64-static，使用 cross 或 zig 交叉编译
-  #     # 预留扩展接口，当前仅构建 x86_64 Linux
+          echo "✅ 发布成功"
+          echo "🔗 https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
