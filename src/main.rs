@@ -124,7 +124,6 @@ async fn check_port_with_semaphore(
     let addr = format!("{}:{}", ip, port);
     let timeout_dur = Duration::from_secs(timeout_sec);
 
-    // ✅ 修复：使用 matches! 宏替代 match（clippy::match_like_matches_macro）
     matches!(timeout(timeout_dur, TcpStream::connect(&addr)).await, Ok(Ok(_)))
 }
 
@@ -485,7 +484,7 @@ async fn main() {
                 );
             }
 
-            // ✅ 修复：使用 is_multiple_of() 替代手动取模（clippy::manual_is_multiple_of）
+
             if round.is_multiple_of(10) {
                 info!("╚══════════════════════════════════════════════════════════╝");
                 info!(
