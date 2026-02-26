@@ -99,7 +99,8 @@ impl AlertState {
 
         if now_ts - last >= cooldown as i64 {
             self.last_alert.insert(device_id.to_string(), now_ts);
-            self.is_failed.insert(device_id.to_string(), currently_failed);
+            self.is_failed
+                .insert(device_id.to_string(), currently_failed);
             true
         } else {
             false
@@ -181,12 +182,8 @@ async fn check_device_parallel(
         let to_sec = timeout_sec;
 
         tasks.spawn(async move {
-            let (success, failed_ips) = check_item_with_parallel_ip(
-                &check_clone,
-                &ips_clone,
-                to_sec,
-                sem_clone,
-            ).await;
+            let (success, failed_ips) =
+                check_item_with_parallel_ip(&check_clone, &ips_clone, to_sec, sem_clone).await;
             (check_clone, success, failed_ips)
         });
     }
@@ -234,8 +231,7 @@ async fn send_wechat_alert(webhook: &str, device: &Device, failures: &[CheckFail
     for (idx, failure) in failures.iter().enumerate() {
         detail.push_str(&format!(
             "┌─ 🔴 {} (端口：{})\n",
-            failure.check_name,
-            failure.port
+            failure.check_name, failure.port
         ));
 
         let display_ips: Vec<&String> = failure.attempted_ips.iter().take(10).collect();
@@ -249,7 +245,10 @@ async fn send_wechat_alert(webhook: &str, device: &Device, failures: &[CheckFail
         }
 
         if failure.attempted_ips.len() > 10 {
-            detail.push_str(&format!("│  └─ ... 还有 {} 个 IP\n", failure.attempted_ips.len() - 10));
+            detail.push_str(&format!(
+                "│  └─ ... 还有 {} 个 IP\n",
+                failure.attempted_ips.len() - 10
+            ));
         }
 
         if idx < failures.len() - 1 {
@@ -260,7 +259,10 @@ async fn send_wechat_alert(webhook: &str, device: &Device, failures: &[CheckFail
     detail.push_str(&format!(
         "└─ 📊 统计：{} 项检查失败 | {} 个 IP 受影响\n",
         failures.len(),
-        failures.iter().map(|f| f.attempted_ips.len()).sum::<usize>()
+        failures
+            .iter()
+            .map(|f| f.attempted_ips.len())
+            .sum::<usize>()
     ));
     detail.push_str("```\n");
 
@@ -322,7 +324,8 @@ fn load_config(path: &str) -> Result<Config, Box<dyn std::error::Error>> {
         return Err(format!(
             "webhook URL 格式错误，必须以 http/https 开头：{}",
             config.settings.webhook
-        ).into());
+        )
+        .into());
     }
 
     Ok(config)
@@ -382,7 +385,10 @@ async fn main() {
             info!("  ├─ 设备数量：{}", c.devices.len());
             info!("  ├─ 检测间隔：{}s", c.settings.interval);
             info!("  ├─ 连接超时：{}s", c.settings.timeout);
-            info!("  └─ 并发限制：{} 连接", c.settings.max_concurrent_connections);
+            info!(
+                "  └─ 并发限制：{} 连接",
+                c.settings.max_concurrent_connections
+            );
             println!();
             c
         }
@@ -431,7 +437,8 @@ async fn main() {
                 });
             }
 
-            let mut group_failures: HashMap<String, Vec<(Device, Vec<CheckFailure>)>> = HashMap::new();
+            let mut group_failures: HashMap<String, Vec<(Device, Vec<CheckFailure>)>> =
+                HashMap::new();
 
             while let Some(result) = tasks.join_next().await {
                 match result {
@@ -478,17 +485,21 @@ async fn main() {
             if group_failures.is_empty() {
                 info!("✓ 第 {:>3} 轮 | 全部正常 | 耗时：{}s", round, elapsed);
             } else {
-                warn!("⚠ 第 {:>3} 轮 | {} 设备故障 | {} 告警发送 | 耗时：{}s",
-                      round,
-                      group_failures.values().map(|v| v.len()).sum::<usize>(),
-                      new_alerts,
-                      elapsed);
+                warn!(
+                    "⚠ 第 {:>3} 轮 | {} 设备故障 | {} 告警发送 | 耗时：{}s",
+                    round,
+                    group_failures.values().map(|v| v.len()).sum::<usize>(),
+                    new_alerts,
+                    elapsed
+                );
             }
 
             if round % 10 == 0 {
                 info!("╚══════════════════════════════════════════════════════════╝");
-                info!("📊 累计：{} 轮 | 告警：{} 次 | 恢复：{} 台",
-                      round, total_alerts, recovered_count);
+                info!(
+                    "📊 累计：{} 轮 | 告警：{} 次 | 恢复：{} 台",
+                    round, total_alerts, recovered_count
+                );
                 println!();
             }
 

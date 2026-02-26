@@ -20,7 +20,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
-  BIN_NAME: netpulse-rs
+  BIN_NAME: net_monitor # ✅ 修复：与实际包名一致
   PROJECT_NAME: netpulse-rs
 
 jobs:
@@ -107,21 +107,29 @@ jobs:
           BIN_NAME="${{ env.BIN_NAME }}"
           BIN_PATH="target/x86_64-unknown-linux-musl/release/${BIN_NAME}"
 
+          echo "Building binary: ${BIN_NAME}"
+          echo "Expected path: ${BIN_PATH}"
+
           cargo build \
             --target x86_64-unknown-linux-musl \
             --release \
             --locked \
             --verbose
 
+          echo "=== 编译后目录内容 ==="
+          ls -la target/x86_64-unknown-linux-musl/release/
+
           if [ ! -f "$BIN_PATH" ]; then
-            echo "FATAL: Binary not generated"
-            ls -la target/x86_64-unknown-linux-musl/release/ || true
+            echo "FATAL: Binary not found at ${BIN_PATH}"
+            echo "Available files:"
+            ls -la target/x86_64-unknown-linux-musl/release/* 2>/dev/null | grep -v "^d" || true
             exit 1
           fi
 
           file "$BIN_PATH"
           ORIG_SIZE=$(du -b "$BIN_PATH" | awk '{print $1}')
           echo "original_size=${ORIG_SIZE}" >> $GITHUB_ENV
+          echo "Binary size: ${ORIG_SIZE} bytes"
 
       - name: Verify Original Binary
         run: |

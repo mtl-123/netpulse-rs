@@ -1,6 +1,6 @@
 [package]
-name = "net_monitor"
-version = "2.2.3"
+name = "netpulse-rs"
+version = "2.2.4"
 edition = "2021"
 description = "高性能并发网络监控系统 - 零冗余生产版"
 
