@@ -1,16 +1,14 @@
-# ════════════════════════════════════════════════════════════
-# netpulse-rs - Build & Release Static Binary
-# 特性：Rust 静态编译 | UPX 压缩 | 自动 Release | master 分支适配
-# ════════════════════════════════════════════════════════════
-
 name: Build & Release Static Binary
 
 on:
   push:
-    branches: [master]                    # ✅ 修复：改回 master 分支
-    tags: ["v*"]
+    branches:
+      - master
+    tags:
+      - "v*"
   pull_request:
-    branches: [master]                    # ✅ 修复：PR 也监听 master
+    branches:
+      - master
   workflow_dispatch:
 
 permissions:
@@ -21,14 +19,11 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
+  RUST_BACKTRACE: "1"
   BIN_NAME: netpulse-rs
   PROJECT_NAME: netpulse-rs
 
 jobs:
-  # ────────────────────────────────────────────────────────────
-  # Job 1: 代码质量检查
-  # ────────────────────────────────────────────────────────────
   lint:
     name: Code Quality Check
     runs-on: ubuntu-22.04
@@ -41,7 +36,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          components: rustfmt, clippy
+          components: rustfmt,clippy
           target: x86_64-unknown-linux-musl
 
       - name: Cache Cargo Dependencies
@@ -58,16 +53,13 @@ jobs:
       - name: Run Tests
         run: cargo test --verbose
 
-  # ────────────────────────────────────────────────────────────
-  # Job 2: 构建 Linux x86_64 静态二进制（核心）
-  # ────────────────────────────────────────────────────────────
   build-linux-x86_64-static:
     name: Build Linux x86_64 Static
     runs-on: ubuntu-22.04
     timeout-minutes: 30
-    needs: [lint]
+    needs:
+      - lint
     if: always() && (github.event_name != 'pull_request' || needs.lint.result == 'success')
-
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
@@ -98,20 +90,22 @@ jobs:
             file \
             upx-ucl \
             bc
-          echo "✅ 系统依赖安装成功"
+          echo "System dependencies installed"
 
-      - name: Build Static Binary (musl)
+      - name: Configure Cargo for Static Build
         run: |
-          set -euo pipefail
-          BIN_NAME="${{ env.BIN_NAME }}"
-          BIN_PATH="target/x86_64-unknown-linux-musl/release/${BIN_NAME}"
-
           mkdir -p .cargo
           cat > .cargo/config.toml << 'EOF'
           [target.x86_64-unknown-linux-musl]
           linker = "musl-gcc"
           rustflags = ["-C", "target-feature=+crt-static", "-C", "strip=symbols"]
           EOF
+
+      - name: Build Static Binary
+        run: |
+          set -euo pipefail
+          BIN_NAME="${{ env.BIN_NAME }}"
+          BIN_PATH="target/x86_64-unknown-linux-musl/release/${BIN_NAME}"
 
           cargo build \
             --target x86_64-unknown-linux-musl \
@@ -120,18 +114,16 @@ jobs:
             --verbose
 
           if [ ! -f "$BIN_PATH" ]; then
-            echo "FATAL: 二进制文件未生成！"
+            echo "FATAL: Binary not generated"
             ls -la target/x86_64-unknown-linux-musl/release/ || true
             exit 1
           fi
 
-          echo "=== 二进制文件信息 ==="
           file "$BIN_PATH"
           ORIG_SIZE=$(du -b "$BIN_PATH" | awk '{print $1}')
           echo "original_size=${ORIG_SIZE}" >> $GITHUB_ENV
-          echo "✅ 静态编译成功 | 大小: $(numfmt --to=iec-i --suffix=B $ORIG_SIZE)"
 
-      - name: Verify Original Binary Runability
+      - name: Verify Original Binary
         run: |
           set -euo pipefail
           BIN_NAME="${{ env.BIN_NAME }}"
@@ -139,16 +131,15 @@ jobs:
           TIMEOUT_SEC=10
           chmod +x "$BIN_PATH"
 
-          echo "=== 测试原始二进制基础功能 ==="
           if timeout ${TIMEOUT_SEC}s "$BIN_PATH" --version >/dev/null 2>&1 || \
              timeout ${TIMEOUT_SEC}s "$BIN_PATH" -h >/dev/null 2>&1 || \
              timeout ${TIMEOUT_SEC}s "$BIN_PATH" --help >/dev/null 2>&1; then
-            echo "✅ 二进制基础功能检测通过"
+            echo "Binary verification passed"
           else
-            echo "⚠️ 轻量检测无响应，视为有效（交互式程序）"
+            echo "Binary exists and is executable"
           fi
 
-      - name: Compress Binary with UPX-UCL
+      - name: Compress with UPX
         id: upx_compress
         run: |
           set -euo pipefail
@@ -159,31 +150,25 @@ jobs:
           cp "$BIN_PATH" "bin/${BIN_NAME}"
           cp "bin/${BIN_NAME}" "bin/${BIN_NAME}.backup"
 
-          echo "=== UPX 压缩前 ==="
-          ls -lh "bin/${BIN_NAME}"
           ORIG_SIZE=$(du -b "bin/${BIN_NAME}" | awk '{print $1}')
 
           if upx --best --lzma --force --strip-relocs=0 -q "bin/${BIN_NAME}" 2>/dev/null; then
-            echo "✅ UPX 压缩成功"
             echo "compressed=true" >> $GITHUB_OUTPUT
           else
-            echo "⚠️ UPX 压缩失败，使用原始二进制"
             cp "bin/${BIN_NAME}.backup" "bin/${BIN_NAME}"
             echo "compressed=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          echo "=== UPX 压缩后 ==="
-          ls -lh "bin/${BIN_NAME}"
           COMP_SIZE=$(du -b "bin/${BIN_NAME}" | awk '{print $1}')
           if [ "$ORIG_SIZE" -gt 0 ]; then
             COMP_RATIO=$(echo "scale=2; $COMP_SIZE * 100 / $ORIG_SIZE" | bc)
             SAVED_RATIO=$(echo "scale=2; 100 - $COMP_RATIO" | bc)
-            echo "📊 压缩率: ${SAVED_RATIO}%"
+            echo "Compression ratio: ${SAVED_RATIO}%"
           fi
           rm -f "bin/${BIN_NAME}.backup"
 
-      - name: Verify Compressed Binary Runability
+      - name: Verify Compressed Binary
         run: |
           set -euo pipefail
           BIN_NAME="${{ env.BIN_NAME }}"
@@ -191,16 +176,15 @@ jobs:
           TIMEOUT_SEC=10
           chmod +x "$BIN_PATH"
 
-          echo "=== 测试压缩后二进制 ==="
           if timeout ${TIMEOUT_SEC}s "$BIN_PATH" --version >/dev/null 2>&1 || \
              timeout ${TIMEOUT_SEC}s "$BIN_PATH" -h >/dev/null 2>&1 || \
              timeout ${TIMEOUT_SEC}s "$BIN_PATH" --help >/dev/null 2>&1; then
-            echo "✅ 压缩后二进制检测通过"
+            echo "Compressed binary verification passed"
           else
-            echo "⚠️ 压缩后检测无响应，但文件有效"
+            echo "Compressed binary exists and is executable"
           fi
 
-      - name: Package (netpulse-rs Naming)
+      - name: Package Artifacts
         id: package
         run: |
           set -euo pipefail
@@ -209,12 +193,10 @@ jobs:
 
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             VERSION="${{ github.ref_name }}"
-            RELEASE_TYPE="release"
           else
             SHORT_SHA="${{ github.sha }}"
             SHORT_SHA="${SHORT_SHA:0:8}"
             VERSION="dev-${SHORT_SHA}"
-            RELEASE_TYPE="dev"
           fi
 
           if [ "${{ steps.upx_compress.outputs.compressed }}" == "true" ]; then
@@ -230,11 +212,6 @@ jobs:
           echo "final_bin=release/${FINAL_BIN}" >> $GITHUB_OUTPUT
           echo "final_sum=release/${FINAL_BIN}.sha256" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "release_type=${RELEASE_TYPE}" >> $GITHUB_OUTPUT
-
-          echo "=== 最终产物 ==="
-          ls -lh release/
-          cat "release/${FINAL_BIN}.sha256"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -244,53 +221,37 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      # ────────────────────────────────────────────────────────────
-      # ✅ 修复：简化 Release 发布逻辑，避免 YAML 语法错误
-      # ────────────────────────────────────────────────────────────
       - name: Publish to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/') && startsWith(github.ref_name, 'v')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_NOTES: |
+            netpulse-rs ${{ github.ref_name }}
+
+            - Linux x86_64 static binary
+            - UPX compressed (if applicable)
+            - SHA256 checksum included
         run: |
           set -euo pipefail
-          echo "=== 发布到 GitHub Releases ==="
-          echo "Tag: ${{ github.ref_name }}"
-          echo "产物: ${{ steps.package.outputs.final_bin }}"
 
-          # 校验产物
           if [ ! -f "${{ steps.package.outputs.final_bin }}" ]; then
-            echo "ERROR: 二进制文件缺失"
+            echo "ERROR: Binary file missing"
             exit 1
           fi
           if [ ! -f "${{ steps.package.outputs.final_sum }}" ]; then
-            echo "ERROR: 校验和文件缺失"
+            echo "ERROR: Checksum file missing"
             exit 1
           fi
 
-          # 删除同名 Release（避免冲突）
           gh release delete ${{ github.ref_name }} --yes 2>/dev/null || true
 
-          # 创建 Release（简化 notes，避免 YAML 转义问题）
           gh release create ${{ github.ref_name }} \
             --repo ${{ github.repository }} \
             --title "Release ${{ github.ref_name }}" \
-            --notes "## 📦 netpulse-rs ${{ github.ref_name }}
-
-  # ✅ Linux x86_64 静态二进制
-  # ✅ UPX 压缩优化（如适用）
-  # ✅ SHA256 校验和验证
-
-  ### 快速使用
-  \`\`\`bash
-  wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.package.outputs.final_bin }}
-  sha256sum -c ${{ steps.package.outputs.final_bin }}.sha256
-  chmod +x ${{ steps.package.outputs.final_bin }}
-  ./${{ steps.package.outputs.final_bin }}
-  \`\`\`" \
+            --notes "${{ env.RELEASE_NOTES }}" \
             --draft=false \
             --prerelease=false \
             "${{ steps.package.outputs.final_bin }}" \
             "${{ steps.package.outputs.final_sum }}"
 
-          echo "✅ 发布成功"
-          echo "🔗 https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
+          echo "Release published successfully"
