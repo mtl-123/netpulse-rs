@@ -3,26 +3,17 @@ name = "net_monitor"
 version = "2.2.6"
 edition = "2021"
 description = "网络脉搏监控系统 - 高性能异步 TCP 连通性检测"
-authors = ["梅桃林"]
+authors = ["MTL"]
 license = "MIT"
 repository = "https://github.com/mtl-123/netpulse-rs"
 
 [dependencies]
-# 异步运行时
 tokio = { version = "1", features = ["full", "signal"] }
-
-# 序列化
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
-
-# 时间处理
 chrono = { version = "0.4", features = ["clock"] }
-
-# HTTP 客户端（启用 rustls-tls 支持 https）
 reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
-
-# 结构化日志
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
 
