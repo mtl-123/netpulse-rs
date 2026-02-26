@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════
-// netpulse-rs v2.2.5 - 网络脉搏监控系统
-// 特性：异步并发检测 | 企业微信告警 | 优雅退出 | 零警告编译
+// 网络连通性监控系统 v2.2.3
+// 特性：三级并发检测 | 彩色日志 | 告警静默 | 优雅退出 | 零冗余
 // ════════════════════════════════════════════════════════════
 
 #![warn(rust_2018_idioms)]
@@ -96,9 +96,11 @@ impl AlertState {
         }
 
         let last = self.last_alert.get(device_id).copied().unwrap_or(0);
+
         if now_ts - last >= cooldown as i64 {
             self.last_alert.insert(device_id.to_string(), now_ts);
-            self.is_failed.insert(device_id.to_string(), currently_failed);
+            self.is_failed
+                .insert(device_id.to_string(), currently_failed);
             true
         } else {
             false
@@ -124,8 +126,10 @@ async fn check_port_with_semaphore(
     let addr = format!("{}:{}", ip, port);
     let timeout_dur = Duration::from_secs(timeout_sec);
 
-    // ✅ 修复：使用 matches! 宏替代 match（clippy::match_like_matches_macro）
-    matches!(timeout(timeout_dur, TcpStream::connect(&addr)).await, Ok(Ok(_)))
+    match timeout(timeout_dur, TcpStream::connect(&addr)).await {
+        Ok(Ok(_)) => true,
+        _ => false,
+    }
 }
 
 async fn check_item_with_parallel_ip(
@@ -160,6 +164,7 @@ async fn check_item_with_parallel_ip(
             }
         }
     }
+
     (any_success, failed_ips)
 }
 
@@ -177,12 +182,8 @@ async fn check_device_parallel(
         let to_sec = timeout_sec;
 
         tasks.spawn(async move {
-            let (success, failed_ips) = check_item_with_parallel_ip(
-                &check_clone,
-                &ips_clone,
-                to_sec,
-                sem_clone,
-            ).await;
+            let (success, failed_ips) =
+                check_item_with_parallel_ip(&check_clone, &ips_clone, to_sec, sem_clone).await;
             (check_clone, success, failed_ips)
         });
     }
@@ -204,6 +205,7 @@ async fn check_device_parallel(
             }
         }
     }
+
     (failures.is_empty(), failures)
 }
 
@@ -229,8 +231,7 @@ async fn send_wechat_alert(webhook: &str, device: &Device, failures: &[CheckFail
     for (idx, failure) in failures.iter().enumerate() {
         detail.push_str(&format!(
             "┌─ 🔴 {} (端口：{})\n",
-            failure.check_name,
-            failure.port
+            failure.check_name, failure.port
         ));
 
         let display_ips: Vec<&String> = failure.attempted_ips.iter().take(10).collect();
@@ -258,7 +259,10 @@ async fn send_wechat_alert(webhook: &str, device: &Device, failures: &[CheckFail
     detail.push_str(&format!(
         "└─ 📊 统计：{} 项检查失败 | {} 个 IP 受影响\n",
         failures.len(),
-        failures.iter().map(|f| f.attempted_ips.len()).sum::<usize>()
+        failures
+            .iter()
+            .map(|f| f.attempted_ips.len())
+            .sum::<usize>()
     ));
     detail.push_str("```\n");
 
@@ -320,14 +324,15 @@ fn load_config(path: &str) -> Result<Config, Box<dyn std::error::Error>> {
         return Err(format!(
             "webhook URL 格式错误，必须以 http/https 开头：{}",
             config.settings.webhook
-        ).into());
+        )
+        .into());
     }
 
     Ok(config)
 }
 
 // ────────────────────────────────────────────────────────────
-// 日志初始化（ChronoLocal 兼容方案）
+// 日志初始化（美化格式 + ChronoLocal 兼容方案）
 // ────────────────────────────────────────────────────────────
 
 fn init_logging() {
@@ -342,9 +347,8 @@ fn init_logging() {
         })
         .unwrap_or(Level::INFO);
 
-    let timer = tracing_subscriber::fmt::time::ChronoLocal::new(
-        "%Y-%m-%dT%H:%M:%S%:z".to_string()
-    );
+    // ✅ 使用 ChronoLocal 格式化时间（需要 tracing-subscriber 启用 chrono 特性）
+    let timer = tracing_subscriber::fmt::time::ChronoLocal::new("%Y-%m-%dT%H:%M:%S%:z".to_string());
 
     let subscriber = FmtSubscriber::builder()
         .with_max_level(level)
@@ -369,7 +373,7 @@ async fn main() {
 
     println!();
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║     🚀 netpulse-rs v2.2.5 (高性能并发版)                  ║");
+    println!("║         🚀 网络连通性监控系统  (高性能并发版)            ║");
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();
 
@@ -381,7 +385,10 @@ async fn main() {
             info!("  ├─ 设备数量：{}", c.devices.len());
             info!("  ├─ 检测间隔：{}s", c.settings.interval);
             info!("  ├─ 连接超时：{}s", c.settings.timeout);
-            info!("  └─ 并发限制：{} 连接", c.settings.max_concurrent_connections);
+            info!(
+                "  └─ 并发限制：{} 连接",
+                c.settings.max_concurrent_connections
+            );
             println!();
             c
         }
@@ -413,7 +420,7 @@ async fn main() {
             round += 1;
             let round_start = Instant::now();
 
-            if round.is_multiple_of(10) {
+            if round % 10 == 1 {
                 info!("╔══════════════════════════════════════════════════════════╗");
             }
 
@@ -430,22 +437,25 @@ async fn main() {
                 });
             }
 
-            let mut group_failures: HashMap<String, Vec<(Device, Vec<CheckFailure>)>> = HashMap::new();
+            let mut group_failures: HashMap<String, Vec<(Device, Vec<CheckFailure>)>> =
+                HashMap::new();
 
             while let Some(result) = tasks.join_next().await {
-                // ✅ 修复：使用 if let 替代单模式 match（clippy::single_match）
-                if let Ok((device, is_ok, failures)) = result {
-                    if !is_ok {
-                        group_failures
-                            .entry(device.group.clone())
-                            .or_default()
-                            .push((device, failures));
-                    } else {
-                        let mut state = alert_state.lock().await;
-                        if state.mark_recovered(&device.id) {
-                            recovered_count += 1;
+                match result {
+                    Ok((device, is_ok, failures)) => {
+                        if !is_ok {
+                            group_failures
+                                .entry(device.group.clone())
+                                .or_default()
+                                .push((device, failures));
+                        } else {
+                            let mut state = alert_state.lock().await;
+                            if state.mark_recovered(&device.id) {
+                                recovered_count += 1;
+                            }
                         }
                     }
+                    Err(_) => {}
                 }
             }
 
@@ -453,8 +463,7 @@ async fn main() {
             let mut state = alert_state.lock().await;
             let mut new_alerts = 0u64;
 
-            // ✅ 修复：使用 .values() 替代键值迭代（clippy::for_kv_map）
-            for failed_list in group_failures.values() {
+            for (_group_name, failed_list) in &group_failures {
                 for (device, failures) in failed_list {
                     if state.should_alert(&device.id, now_ts, cooldown_sec) {
                         new_alerts += 1;
@@ -485,8 +494,7 @@ async fn main() {
                 );
             }
 
-            // ✅ 修复：使用 is_multiple_of() 替代手动取模（clippy::manual_is_multiple_of）
-            if round.is_multiple_of(10) {
+            if round % 10 == 0 {
                 info!("╚══════════════════════════════════════════════════════════╝");
                 info!(
                     "📊 累计：{} 轮 | 告警：{} 次 | 恢复：{} 台",

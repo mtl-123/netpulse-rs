@@ -20,7 +20,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
-  BIN_NAME: net_monitor
+  BIN_NAME: net_monitor # ✅ 修复：与实际包名一致
   PROJECT_NAME: netpulse-rs
 
 jobs:
@@ -110,10 +110,10 @@ jobs:
           echo "Building binary: ${BIN_NAME}"
           echo "Expected path: ${BIN_PATH}"
 
-          # ✅ 修复：移除 --locked 标志，允许更新依赖
           cargo build \
             --target x86_64-unknown-linux-musl \
             --release \
+            --locked \
             --verbose
 
           echo "=== 编译后目录内容 ==="
